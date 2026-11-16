@@ -127,9 +127,26 @@ internal class CollectionData(val preferences: android.content.SharedPreferences
         val order = (listOf("All games") + names.filter { it !in setOf(WishlistItems.LIST, HIDDEN_LIST) } + listOf(WishlistItems.LIST, HIDDEN_LIST)).distinct().filter { it in names }
         check(preferences.edit().putString("list-order", JSONArray(order).toString()).commit()) { "Could not save list order." }
     }
-    fun visibleLists(hasGames: (String) -> Boolean) = lists.filter { if (it == "Game Pass" && isAutomaticList(it)) showGamePass else if (it == HIDDEN_LIST) showHiddenGames else (it != "Downloads" && GameProgress.fromLabel(it) == null) || hasGames(it) }
+    var hiddenLists: Set<String>
+        get() = preferences.getStringSet("hidden-lists", emptySet())?.toSet() ?: emptySet()
+        set(value) { preferences.edit { putStringSet("hidden-lists", value - "All games") } }
+    fun setListHidden(name: String, hidden: Boolean) = synchronized(Companion) {
+        if (name == "All games") return@synchronized
+        val next = if (hidden) hiddenLists + name else hiddenLists - name
+        hiddenLists = next
+        if (hidden && list == name) list = "All games"
+    }
+    fun visibleLists(hasGames: (String) -> Boolean) = lists.filter {
+        it !in hiddenLists &&
+            if (it == "Game Pass" && isAutomaticList(it)) showGamePass
+            else if (it == HIDDEN_LIST) showHiddenGames
+            else (it != "Downloads" && GameProgress.fromLabel(it) == null) || hasGames(it)
+    }
     val editableLists get() = lists.filter { it !in setOf("Downloads", WishlistItems.LIST) && GameProgress.fromLabel(it) == null && !isAutomaticList(it) && (it != HIDDEN_LIST || showHiddenGames) }
-    fun isAutomaticList(name: String) = name in listOf("All games", "Steam", "GOG", "Epic", "Xbox", "Game Pass") && name !in customLists
+    fun isAutomaticList(name: String) = name in listOf(
+        "All games", "Steam", "GOG", "Epic", "Xbox", "Game Pass",
+        "Ubisoft Connect", "EA App", "PlayStation", "Amazon Games"
+    ) && name !in customLists
     fun canRemoveList(name: String) = name in lists && name !in PERMANENT_LISTS && GameProgress.fromLabel(name) == null
     fun removeList(name: String) = synchronized(Companion) {
         require(canRemoveList(name)) { "This list cannot be removed." }
@@ -251,7 +268,11 @@ internal class CollectionData(val preferences: android.content.SharedPreferences
     companion object {
         const val HIDDEN_LIST = "Hidden"
         private val PERMANENT_LISTS = setOf("Downloads", WishlistItems.LIST, HIDDEN_LIST)
-        val BUILT_IN_LISTS = listOf("All games", "Steam", "GOG", "Epic", "Xbox", "Game Pass", "Favorites", "Downloads", WishlistItems.LIST, HIDDEN_LIST)
+        val BUILT_IN_LISTS = listOf(
+            "All games", "Steam", "GOG", "Epic", "Xbox", "Game Pass",
+            "Ubisoft Connect", "EA App", "PlayStation", "Amazon Games",
+            "Favorites", "Downloads", WishlistItems.LIST, HIDDEN_LIST
+        )
         @Synchronized fun clearStore(context: Context, store: String) {
             CustomArtwork(context).clearStore(store)
             val preferences = context.getSharedPreferences("collection-v1", Context.MODE_PRIVATE)

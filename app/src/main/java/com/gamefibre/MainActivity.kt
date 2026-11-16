@@ -101,6 +101,7 @@ class MainActivity : AppCompatActivity() {
         val view = storeSearchView ?: StoreSearchView(this, ui, scope,
             open = { game -> openGame(resolveOwnedStoreResult(game, ownedLibrary, ::communitySteamId), emptyList()) }, chooseArtwork = ::changeCoverArtwork,
             artworkReady = { game -> if (tab == "game" && gameReturnTab == "store" && selectedEntry?.let(::communitySteamId) == game.id.toIntOrNull()) render(state, true) },
+            openUrl = ::openUrl,
             saved = storeSearchState).also { storeSearchView = it }
         storeCatalog?.let { view.load(it) }
         if (storeCatalog == null && storeCatalogJob?.isActive != true) storeCatalogJob = scope.launch {
@@ -173,7 +174,15 @@ class MainActivity : AppCompatActivity() {
     private var ownedByTitle = emptyMap<String, List<LibraryEntry>>()
     private val storeFilter get() = listStore(collection.list)
     private fun listStore(name: String) = if (!collection.isAutomaticList(name)) null else when (name) {
-        "Steam" -> LibraryStore.STEAM; "GOG" -> LibraryStore.GOG; "Epic" -> LibraryStore.EPIC; "Xbox", "Game Pass" -> LibraryStore.XBOX; else -> null
+        "Steam" -> LibraryStore.STEAM
+        "GOG" -> LibraryStore.GOG
+        "Epic" -> LibraryStore.EPIC
+        "Xbox", "Game Pass" -> LibraryStore.XBOX
+        "Ubisoft Connect" -> LibraryStore.UBISOFT
+        "EA App" -> LibraryStore.EA
+        "PlayStation" -> LibraryStore.PSN
+        "Amazon Games" -> LibraryStore.AMAZON
+        else -> null
     }
     private var steamSignIn = false
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -656,7 +665,7 @@ class MainActivity : AppCompatActivity() {
             tab == "store" -> "store"
             tab == "settings" -> "settings"
             tab == "game" -> gameScreenKey()
-            tab == "accounts" && steamSignIn -> "auth:${state.optString("status")}:${state.optString("guardError")}:${state.optString("challengeUrl")}:${state.optString("guardEmail")}:${state.optBoolean("canUseGuardCode")}:$method:${state.optBoolean("sessionAvailable")}"
+            tab == "accounts" && steamSignIn -> "auth:${state.optString("status")}:${state.optString("guardError")}:${state.optString("connectionError")}:${state.optString("challengeUrl")}:${state.optString("guardEmail")}:${state.optBoolean("canUseGuardCode")}:$method:${state.optBoolean("sessionAvailable")}"
             tab == "accounts" -> "accounts:${state.optString("status")}:${state.optString("connectionError")}:${state.optBoolean("sessionAvailable")}:${allGames.size}:${state.optBoolean("libraryLoading")}:${accounts.state.value.map { (store, account) -> listOf(store, account.saved, account.connected, account.loading, account.games.size, account.error) }}:$busy"
             else -> "library:${collection.tileSize}"
         }
@@ -771,7 +780,7 @@ class MainActivity : AppCompatActivity() {
             val searchQuery = storeSearch?.queryText ?: query
             val search = ui.row().apply { background = ui.shape(ui.surface, 24) }
             val searchHint = when {
-                storeSearch != null -> "Search Steam games"
+                storeSearch != null -> "Search Steam, Xbox & PC Deals"
                 collection.list.isEmpty() || collection.list == "All games" -> "Search your collection"
                 else -> "Search ${collection.list}"
             }
@@ -829,9 +838,17 @@ class MainActivity : AppCompatActivity() {
                 top.addView(Space(this), LinearLayout.LayoutParams(0, ui.dp(48), 1f))
                 top.addView(ui.iconButton(R.drawable.ic_more_vertical, "Game actions", ::showGameActions).apply { tag = "game-actions" })
             } else {
-                top.addView(ui.text(if (tab == "store") "Steam search" else if (steamSignIn) "Connect Steam" else if (tab == "settings") "Settings" else "Accounts", 20, medium = true).apply {
+                top.addView(ui.text(if (tab == "store") "Store search" else if (steamSignIn) "Connect Steam" else if (tab == "settings") "Settings" else "Accounts", 20, medium = true).apply {
                     maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
                 }, LinearLayout.LayoutParams(0, -2, 1f))
+                if (tab == "accounts" && !steamSignIn) {
+                    top.addView(ui.iconButton(R.drawable.ic_pencil, "Reorder & hide tabs") {
+                        showLibraryTabsDialog(this, ui, collection) {
+                            retainedLibrary = null
+                            render(state, true)
+                        }
+                    })
+                }
             }
             ui.add(header, top)
         }
@@ -944,9 +961,31 @@ class MainActivity : AppCompatActivity() {
                     else showStoreLogin(source.account!!)
                 }
             } else ui.text(statusText, 13, ui.secondary))
+            if (accountError.isNotBlank() && !working) {
+                ui.gap(card, 6)
+                ui.add(card, ui.text(accountError, 12, ui.error))
+            }
             if (source == LibraryStore.XBOX) {
                 ui.gap(card, 8)
                 ui.add(card, ui.text("Owned games and Game Pass appear in separate lists.", 13, ui.secondary))
+                val gamePassToggle = CheckBox(this).apply {
+                    text = "Show Game Pass tab"
+                    typeface = ui.font
+                    textSize = 14f
+                    setTextColor(ui.ink)
+                    buttonTintList = android.content.res.ColorStateList.valueOf(ui.blue)
+                    isChecked = collection.showGamePass
+                    minHeight = ui.dp(44)
+                    setOnCheckedChangeListener { _, checked ->
+                        collection.showGamePass = checked
+                        if (!checked && collection.list == "Game Pass" && collection.isAutomaticList(collection.list)) {
+                            collection.list = "All games"
+                        }
+                        retainedLibrary = null
+                        render(state, true)
+                    }
+                }
+                ui.add(card, gamePassToggle)
             }
             ui.gap(card, 12)
             if (saved || active || cached) {
@@ -961,6 +1000,27 @@ class MainActivity : AppCompatActivity() {
                     if (source == LibraryStore.STEAM) confirmSignOut() else confirmStoreSignOut(source.account!!)
                 }.apply { if (source == LibraryStore.STEAM) enable(this, !busy) })
                 ui.add(card, actions)
+                if (source.account != null) {
+                    val slots = accounts.slotsState.value.getValue(source.account)
+                        .filter { it.account.saved || it.account.connected || it.account.libraryLoaded }
+                    if (slots.size > 1) {
+                        ui.gap(card, 10)
+                        slots.forEach { slot ->
+                            val slotRow = ui.row()
+                            val label = slot.account.owner ?: slot.slotId
+                            val n = slot.account.games.size
+                            slotRow.addView(ui.text("$label · $n games", 12, ui.secondary), LinearLayout.LayoutParams(0, -2, 1f))
+                            slotRow.addView(ui.iconButton(R.drawable.ic_log_out, "Remove $label") {
+                                act { accounts.signOut(source.account, slot.slotId) }
+                            })
+                            ui.add(card, slotRow)
+                        }
+                    }
+                    ui.gap(card, 8)
+                    ui.add(card, ui.button("Add another account") {
+                        showStoreLogin(source.account, accounts.nextSlotId(source.account))
+                    })
+                }
             } else if (working) {
                 ui.add(card, ui.button("Continue sign-in", true) {
                     if (source == LibraryStore.STEAM) { steamSignIn = true; render(state, true) }
@@ -990,10 +1050,87 @@ class MainActivity : AppCompatActivity() {
             ui.button("Cancel") { dialog.dismiss() }); showModal(dialog)
     }
 
-    private fun showStoreLogin(store: GameStore) {
+    private fun showStoreLogin(store: GameStore, slotId: String = StoreAccounts.DEFAULT_SLOT) {
         downloadDialog?.dismiss()
-        if (store == GameStore.XBOX) startActivity(Intent(this, XboxLoginActivity::class.java))
-        else startActivity(Intent(this, StoreLoginActivity::class.java).putExtra("store", store.name))
+        when (store) {
+            GameStore.XBOX -> startActivity(Intent(this, XboxLoginActivity::class.java).putExtra("slotId", slotId))
+            GameStore.UBISOFT -> showUbisoftLogin(slotId)
+            else -> startActivity(Intent(this, StoreLoginActivity::class.java).putExtra("store", store.name).putExtra("slotId", slotId))
+        }
+    }
+
+    private fun showUbisoftLogin(slotId: String = StoreAccounts.DEFAULT_SLOT) {
+        val dialog = ContentDialog(this, ui, "Sign in to Ubisoft Connect", secureContent = true)
+        val status = ui.text("Sign in with your Ubisoft Connect email and password. Your password is never stored.", 13, ui.secondary)
+        val emailInput = ui.input("Email").apply {
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+        }
+        val passwordInput = ui.input("Password", password = true)
+        val twoFaInput = ui.input("2FA code").apply { visibility = View.GONE }
+        var twoFaTicket: String? = null
+        var signingIn = false
+
+        ui.add(dialog.content, status); ui.gap(dialog.content)
+        ui.add(dialog.content, emailInput); ui.gap(dialog.content)
+        ui.add(dialog.content, passwordInput); ui.gap(dialog.content)
+        ui.add(dialog.content, twoFaInput)
+
+        val submit = ui.button("Sign in", primary = true) {}
+        submit.setOnClickListener {
+            if (signingIn) return@setOnClickListener
+            val email = emailInput.text.toString().trim()
+            val password = passwordInput.text.toString()
+            val code = twoFaInput.text.toString().trim()
+            if (twoFaTicket == null && (email.isBlank() || password.isBlank())) {
+                status.text = "Enter both your email and password."
+                status.setTextColor(ui.error)
+                return@setOnClickListener
+            }
+            if (twoFaTicket != null && code.isBlank()) {
+                status.text = "Enter your 2FA verification code."
+                status.setTextColor(ui.error)
+                return@setOnClickListener
+            }
+            signingIn = true
+            enable(submit, false)
+            status.text = "Signing in to Ubisoft Connect…"
+            status.setTextColor(ui.secondary)
+            scope.launch {
+                val outcome = runCatching {
+                    withContext(Dispatchers.IO) {
+                        com.gamefibre.stores.ExtraStoresApi.ubisoftAuthenticate(email, password, twoFaTicket, code)
+                    }
+                }
+                signingIn = false
+                enable(submit, true)
+                outcome.onSuccess { result ->
+                    when (result) {
+                        is com.gamefibre.stores.UbisoftAuthResult.TwoFactorRequired -> {
+                            twoFaTicket = result.ticket
+                            twoFaInput.visibility = View.VISIBLE
+                            emailInput.isEnabled = false
+                            passwordInput.isEnabled = false
+                            status.text = "Enter the 2FA code from your authenticator app or email."
+                            status.setTextColor(ui.secondary)
+                        }
+                        is com.gamefibre.stores.UbisoftAuthResult.Success -> {
+                            passwordInput.text.clear()
+                            accounts.signInDirect(GameStore.UBISOFT, result.session, slotId)
+                            dialog.dismiss()
+                        }
+                    }
+                }.onFailure { error ->
+                    if (error !is IllegalStateException) {
+                        AppLogs.error("UBISOFT", "Ubisoft sign-in dialog error", error)
+                    }
+                    status.text = error.message ?: "Ubisoft sign-in failed."
+                    status.setTextColor(ui.error)
+                }
+            }
+        }
+        dialog.setActions(submit, ui.button("Cancel") { dialog.dismiss() })
+        dialog.setOnDismissListener { passwordInput.text.clear() }
+        showModal(dialog)
     }
 
     private fun renderAuth() {
@@ -1016,6 +1153,11 @@ class MainActivity : AppCompatActivity() {
         }
         fun heading(text: String) { ui.add(card, ui.text(text, 20, medium = true).apply { gravity = Gravity.CENTER }); ui.gap(card, 14) }
         fun paragraph(text: String) { ui.add(card, ui.text(text, 13, ui.secondary).apply { gravity = Gravity.CENTER }); ui.gap(card, 20) }
+        val connectionError = state.optString("connectionError")
+        if (connectionError.isNotBlank() && status == "signedOut") {
+            ui.add(card, ui.text(connectionError, 13, ui.error))
+            ui.gap(card, 14)
+        }
         when {
             status == "restoring" || (status == "signedOut" && state.optBoolean("sessionAvailable")) -> {
                 heading("Opening your library…")
@@ -1181,6 +1323,11 @@ class MainActivity : AppCompatActivity() {
             requestedPage = position
             assetRepository.promote(libraryListEntries(pageNames[position]).take(32).map { it.key }.toSet())
             ensureAround(position)
+            syncing = true
+            pager.setCurrentItem(position, false)
+            syncing = false
+            requestedPage = null
+            activateLibraryPage()
             updateReadiness()
         }
         private fun snapshotReady(position: Int): Boolean {
@@ -1206,7 +1353,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
         init {
-            ensureAround(pageNames.indexOf(collection.list).coerceAtLeast(0))
+            val initialPos = pageNames.indexOf(collection.list).coerceAtLeast(0)
+            assetRepository.promote(libraryListEntries(pageNames[initialPos]).take(32).map { it.key }.toSet())
+            ensureAround(initialPos)
             view.addView(refresh, LinearLayout.LayoutParams(-1, 0, 1f))
             pager.adapter = object : RecyclerView.Adapter<LibraryPageHolder>() {
                 override fun getItemCount() = pageNames.size
@@ -1853,7 +2002,7 @@ class MainActivity : AppCompatActivity() {
                 if (browsingStore) { collection.list = name; query = ""; selectTab("library") }
                 else if (name == collection.list) {
                     query = ""; renderHeader(); updateLibrary(true)
-                } else retainedLibrary?.pager?.setCurrentItem(retainedLibrary?.pageNames?.indexOf(name) ?: 0, true)
+                } else retainedLibrary?.navigate(retainedLibrary?.pageNames?.indexOf(name)?.coerceAtLeast(0) ?: 0)
             }.apply {
                 background = ui.shape(Color.TRANSPARENT, 20)
                 isSelected = !browsingStore && collection.list == name
@@ -1862,7 +2011,7 @@ class MainActivity : AppCompatActivity() {
             },
                 LinearLayout.LayoutParams(-2, ui.dp(48)).apply { marginEnd = ui.dp(4) })
         }
-        row.addView(compactLibraryButton("Steam search") { selectTab("store") }.apply {
+        row.addView(compactLibraryButton("Store search") { selectTab("store") }.apply {
             background = ui.shape(Color.TRANSPARENT, 20)
             isSelected = browsingStore
         },
@@ -2087,7 +2236,7 @@ class MainActivity : AppCompatActivity() {
             collection.list = WishlistItems.LIST; query = ""
             selectTab("library")
         }
-        item("Steam search", tab == "store" || (tab == "game" && gameReturnTab == "store")) { selectTab("store") }
+        item("Store search", tab == "store" || (tab == "game" && gameReturnTab == "store")) { selectTab("store") }
         item("Accounts", tab == "accounts") { selectTab("accounts") }
         item("Settings", tab == "settings") { selectTab("settings") }
         if (appUpdatePrompt.enabled) item(appUpdatePrompt.menuLabel) { appUpdatePrompt.fromMenu() }
@@ -2118,6 +2267,27 @@ class MainActivity : AppCompatActivity() {
             coverArt = {
                 showSteamGridDbKey(this, ui, ::openUrl, dismissed = { render(state, true) })
             },
+            prices = {
+                showGgDealsKey(this, ui, ::openUrl, dismissed = { render(state, true) }, saved = { GamePrices.clearCache() })
+            },
+            currency = {
+                val values = PricePreferences.supportedCurrencies
+                showChoiceDialog(this, ui, "Display currency", values,
+                    values.indexOf(PricePreferences.targetCurrency(this)).coerceAtLeast(0)) { index ->
+                    PricePreferences.setTargetCurrency(this, values[index])
+                    GamePrices.clearCache()
+                    render(state, true)
+                }
+            },
+            localRegion = {
+                showLocalRegionDialog(this, ui) { render(state, true) }
+            },
+            regions = {
+                showFavoriteRegionsDialog(this, ui) { render(state, true) }
+            },
+            priceStores = {
+                showFavoriteStoresDialog(this, ui) { render(state, true) }
+            },
             export = ::showCollectionExports,
             importBackup = ::showCollectionImport,
             storage = {
@@ -2128,7 +2298,8 @@ class MainActivity : AppCompatActivity() {
                     render(engine.snapshot(), true)
                 }
             },
-            attribution = ::showAttributions)
+            attribution = ::showAttributions,
+            logs = { showLogsDialog(this, ui) })
     }
 
     private fun editYouTubeSearches() {
@@ -2801,8 +2972,39 @@ class MainActivity : AppCompatActivity() {
                 }, LinearLayout.LayoutParams(0, -2, 1.5f))
                 ui.add(propertiesBox, row)
             }
+            run {
+                val dbRow = ui.row()
+                dbRow.addView(ui.text("Databases", 12, ui.secondary), LinearLayout.LayoutParams(0, -2, 1f))
+                val dbLinks = android.text.SpannableStringBuilder()
+                val steamDbStart = dbLinks.length
+                dbLinks.append("SteamDB")
+                dbLinks.setSpan(object : android.text.style.ClickableSpan() {
+                    override fun onClick(widget: View) { openUrl(GamePrices.steamDbUrl(steamPageId, game.name)) }
+                }, steamDbStart, dbLinks.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                dbLinks.append(" · ")
+                val ggStart = dbLinks.length
+                dbLinks.append("GG.deals")
+                dbLinks.setSpan(object : android.text.style.ClickableSpan() {
+                    override fun onClick(widget: View) { openUrl(GamePrices.ggDealsUrl(null as RegionalPriceReport?, game.name)) }
+                }, ggStart, dbLinks.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                dbLinks.append(" · ")
+                val nuuvemStart = dbLinks.length
+                dbLinks.append("Nuuvem")
+                dbLinks.setSpan(object : android.text.style.ClickableSpan() {
+                    override fun onClick(widget: View) { openUrl(GamePrices.nuuvemBrUrl(game.name)) }
+                }, nuuvemStart, dbLinks.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                dbRow.addView(ui.text("", 14).apply {
+                    text = dbLinks
+                    setLinkTextColor(ui.blue)
+                    movementMethod = android.text.method.LinkMovementMethod.getInstance()
+                }, LinearLayout.LayoutParams(0, -2, 1.5f))
+                ui.gap(propertiesBox, 8)
+                ui.add(propertiesBox, dbRow)
+            }
             ui.add(content, propertiesBox)
         }
+        val xboxId = sources.firstOrNull { it.store == LibraryStore.XBOX }?.id
+        populatePriceSection(this, content, ui, scope, game.name, steamPageId, xboxId, ::openUrl)
         if (details.screenshots.isNotEmpty()) {
             ui.gap(content, 20); ui.add(content, ui.text("Screenshots", 18, medium = true))
             ui.add(content, ScreenshotCarousel(this, scope, details.screenshots, game.name, load = { address ->

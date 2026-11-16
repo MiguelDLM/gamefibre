@@ -6,8 +6,9 @@ import android.view.View
 import android.widget.LinearLayout
 
 internal fun populateSettings(content: LinearLayout, ui: NativeUi, preferences: SharedPreferences,
-    theme: () -> Unit, youtube: () -> Unit, coverArt: () -> Unit,
-    export: () -> Unit, importBackup: () -> Unit, storage: () -> Unit, attribution: () -> Unit) {
+    theme: () -> Unit, youtube: () -> Unit, coverArt: () -> Unit, prices: () -> Unit,
+    currency: () -> Unit, localRegion: () -> Unit, regions: () -> Unit, priceStores: () -> Unit,
+    export: () -> Unit, importBackup: () -> Unit, storage: () -> Unit, attribution: () -> Unit, logs: () -> Unit) {
     fun section(title: String) {
         if (content.childCount > 0) ui.gap(content, 24)
         ui.add(content, ui.text(title, 14, ui.blue, medium = true).apply {
@@ -49,6 +50,17 @@ internal fun populateSettings(content: LinearLayout, ui: NativeUi, preferences: 
     val hasKey = SteamGridDbKeyVault(content.context).read() != null
     row("Cover art", "SteamGridDB · ${if (hasKey) "API key saved" else "API key required"}", coverArt)
 
+    section("Price comparison")
+    val hasGgDealsKey = GgDealsKeyVault(content.context).read() != null
+    row("GG.deals API key", if (hasGgDealsKey) "API key saved" else "Optional · enables keyshops & historical lows", prices)
+    row("Display currency", "Auto-convert all prices to ${PricePreferences.targetCurrency(content.context)}", currency)
+    val homeRegion = PricePreferences.localRegion(content.context)
+    row("Local region", "${homeRegion.label} (${homeRegion.code} · ${homeRegion.currency})", localRegion)
+    val additionalRegions = PricePreferences.favoriteRegions(content.context).filter { it != homeRegion }
+    row("Comparison regions", if (additionalRegions.isEmpty()) "None" else additionalRegions.joinToString(", ") { it.code }, regions)
+    val selectedStores = PricePreferences.favoriteStores(content.context)
+    row("Favorite stores", "${selectedStores.size} sources enabled", priceStores)
+
     section("Data and storage")
     row("Backup and export", "Collection backup (ZIP) or spreadsheet (CSV)", export)
     row("Import backup", "Restore collection data from a ZIP backup", importBackup)
@@ -56,4 +68,5 @@ internal fun populateSettings(content: LinearLayout, ui: NativeUi, preferences: 
 
     section("About")
     row("Attribution", "Data sources and credits", attribution)
+    row("Logs", "Diagnostics for Steam and store connections", logs)
 }
