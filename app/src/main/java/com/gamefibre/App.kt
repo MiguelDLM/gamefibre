@@ -14,6 +14,11 @@ import com.gamefibre.stores.StoreDownloads
  * pays only for what the current entry point (Activity, service, job) actually needs.
  */
 class App : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        AppLogs.init(this)
+    }
+
     internal val assetTransport by lazy { AssetTransport(this, AssetStore(this)) }
     internal val assetRepository by lazy { AssetRepository(this) }
     val steamEngine by lazy { SteamEngine(this) }
