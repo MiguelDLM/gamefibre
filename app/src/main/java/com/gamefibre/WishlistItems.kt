@@ -10,12 +10,17 @@ internal object WishlistItems {
     const val LIST = "Wishlist"
     const val MAX_ITEMS = 5000
 
+    /** Store artwork hosts shared by stored records and the image transport. */
+    val STORE_IMAGE_HOSTS = listOf("steamstatic.com", "gog-statics.com", "gog.com", "epicgames.com", "unrealengine.com",
+        "store-images.s-microsoft.com", "store-images.microsoft.com", "images-eds-ssl.xboxlive.com",
+        "playstation.com", "playstation.net", "media-amazon.com", "ssl-images-amazon.com", "cloudfront.net",
+        "ea.com", "ubisoft.com", "ubi.com")
+
+    fun imageHost(host: String?): Boolean = STORE_IMAGE_HOSTS.any { host == it || host.orEmpty().endsWith(".$it") }
+
     fun imageUrl(value: String): String = runCatching {
         val uri = URI(value)
-        value.takeIf { uri.scheme == "https" && uri.userInfo == null && uri.port == -1 &&
-            listOf("steamstatic.com", "gog-statics.com", "gog.com", "epicgames.com", "unrealengine.com",
-                "store-images.s-microsoft.com", "store-images.microsoft.com", "images-eds-ssl.xboxlive.com")
-                .any { uri.host == it || uri.host.orEmpty().endsWith(".$it") } }.orEmpty()
+        value.takeIf { uri.scheme == "https" && uri.userInfo == null && uri.port == -1 && imageHost(uri.host) }.orEmpty()
     }.getOrDefault("")
 
     fun json(game: LibraryEntry) = JSONObject().put("store", game.store.name).put("id", game.id)
@@ -31,7 +36,8 @@ internal object WishlistItems {
                 LibraryStore.STEAM -> id.toIntOrNull()?.let { it > 0 } == true
                 LibraryStore.GOG -> id.matches(Regex("[0-9]{1,20}"))
                 LibraryStore.XBOX -> com.gamefibre.stores.xboxProductId(id)
-                LibraryStore.EPIC -> id.matches(Regex("[A-Za-z0-9_-]{1,128}"))
+                LibraryStore.EPIC, LibraryStore.UBISOFT, LibraryStore.EA, LibraryStore.PSN, LibraryStore.AMAZON ->
+                    id.isNotBlank() && id.length <= 256 && id.none { it.isISOControl() || it.isWhitespace() }
             }) { "Invalid wishlist game identity." }
             val name = row.getString("name")
             require(name.isNotBlank() && name.length <= 512 && name.none(Char::isISOControl)) { "Invalid wishlist title." }

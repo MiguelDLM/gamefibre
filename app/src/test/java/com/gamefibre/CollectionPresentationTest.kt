@@ -7,7 +7,7 @@ class CollectionPresentationTest {
     private fun game(store: LibraryStore, id: String, name: String) = LibraryEntry(store, id, name)
 
     @Test fun collectionTabsAreFixedAndIncludeStoreAndDownloadLists() {
-        assertEquals(listOf("All games", "Steam", "GOG", "Epic", "Xbox", "Game Pass", "Favorites", "Downloads", "Wishlist", "Hidden"), CollectionData.BUILT_IN_LISTS)
+        assertEquals(listOf("All games", "Steam", "GOG", "Epic", "Xbox", "Game Pass", "Ubisoft Connect", "EA App", "PlayStation", "Amazon Games", "Favorites", "Downloads", "Wishlist", "Hidden"), CollectionData.BUILT_IN_LISTS)
     }
 
     @Test fun nameSortingIgnoresArticlesWithoutChangingDisplayedNames() {

@@ -60,7 +60,7 @@ internal class AssetStore(context: Context, databaseName: String = "library-asse
         buildList {
             while (rows.moveToNext()) {
                 val key = rows.getString(0)
-                val game = entry(key, rows.getString(2))
+                val game = runCatching { entry(key, rows.getString(2)) }.getOrNull() ?: continue
                 val group = rows.getString(3)
                 val selected = if (rows.isNull(6)) null else SelectedAsset(group, rows.getString(6), rows.getString(7), rows.getString(8))
                     .takeIf { asset -> present.getOrPut(asset.blob) { blob(asset.blob).isFile } }
@@ -151,7 +151,11 @@ internal class AssetStore(context: Context, databaseName: String = "library-asse
         if(keys.isEmpty()) {writableDatabase.execSQL("UPDATE jobs SET priority=2 WHERE priority<>2");return}
         val placeholders=keys.joinToString(","){"?"}
         // Resolve demanded groups once, rather than running a group join per visible card.
-        writableDatabase.execSQL("UPDATE jobs SET priority=CASE WHEN key IN (SELECT key FROM games WHERE group_id IN (SELECT group_id FROM games WHERE key IN ($placeholders))) THEN 0 ELSE 2 END",keys.toTypedArray())
+        writableDatabase.execSQL(
+            "UPDATE jobs SET priority=CASE WHEN key IN (SELECT key FROM games WHERE group_id IN (SELECT group_id FROM games WHERE key IN ($placeholders))) THEN 0 ELSE 2 END, " +
+                "next_at=CASE WHEN key IN (SELECT key FROM games WHERE group_id IN (SELECT group_id FROM games WHERE key IN ($placeholders))) THEN 0 ELSE next_at END",
+            keys.toTypedArray() + keys.toTypedArray(),
+        )
     }
     fun failed(job: Job, message: String) {
         writableDatabase.execSQL("UPDATE jobs SET lease=0,attempt=attempt+1,next_at=?+MIN(3600000,60000*(1 << MIN(attempt,6))) WHERE key=? AND revision=?", arrayOf<Any>(System.currentTimeMillis(),job.key,job.revision))

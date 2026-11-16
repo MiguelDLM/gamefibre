@@ -68,7 +68,7 @@ internal class AssetTransport internal constructor(private val context: Context,
                         repeat(4) {
                             currentCoroutineContext().ensureActive()
                             require(target.scheme=="https" && target.userInfo==null && target.port==-1 &&
-                                listOf("gog-statics.com","gog.com","epicgames.com","unrealengine.com","steamstatic.com","cdn2.steamgriddb.com","images-eds-ssl.xboxlive.com","store-images.s-microsoft.com","store-images.microsoft.com").any { target.host==it || target.host.orEmpty().endsWith(".$it") })
+                                (target.host=="cdn2.steamgriddb.com" || com.gamefibre.WishlistItems.imageHost(target.host)))
                             val connection=target.toURL().openConnection() as HttpURLConnection
                             try {
                                 connection.connectTimeout=8000;connection.readTimeout=10000;connection.instanceFollowRedirects=false

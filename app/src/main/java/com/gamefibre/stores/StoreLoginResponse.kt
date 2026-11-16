@@ -12,7 +12,7 @@ internal object StoreLoginResponse {
         return when (store) {
             GameStore.GOG -> uri.host == "embed.gog.com" && uri.rawPath == "/on_login_success"
             GameStore.EPIC -> uri.host == "www.epicgames.com" && uri.rawPath == "/id/api/redirect"
-            GameStore.XBOX -> false // Microsoft has its own state-bound callback validation.
+            GameStore.XBOX, GameStore.UBISOFT, GameStore.EA, GameStore.PSN, GameStore.AMAZON -> false
         }
     }
 

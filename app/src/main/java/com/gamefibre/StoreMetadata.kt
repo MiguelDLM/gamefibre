@@ -10,6 +10,10 @@ internal fun storePageUrl(store: String, value: String): String? = runCatching {
         "GOG" -> "https://www.gog.com"
         "Epic Games" -> "https://store.epicgames.com"
         "Xbox" -> "https://www.xbox.com"
+        "Ubisoft Connect" -> "https://store.ubisoft.com"
+        "EA App" -> "https://www.ea.com"
+        "PlayStation" -> "https://store.playstation.com"
+        "Amazon Games" -> "https://gaming.amazon.com"
         else -> return null
     }
     val uri = URI(base).resolve(value)
@@ -25,6 +29,10 @@ internal fun storeSearchUrl(store: LibraryStore, name: String): String {
         LibraryStore.STEAM -> "https://store.steampowered.com/search/?term=$query"
         LibraryStore.GOG -> "https://www.gog.com/en/games?query=$query"
         LibraryStore.EPIC -> "https://store.epicgames.com/en-US/browse?q=$query"
+        LibraryStore.UBISOFT -> "https://store.ubisoft.com/search?q=$query"
+        LibraryStore.EA -> "https://www.ea.com/games?q=$query"
+        LibraryStore.PSN -> "https://store.playstation.com/search/$query"
+        LibraryStore.AMAZON -> "https://gaming.amazon.com/search?searchTerm=$query"
     }
 }
 

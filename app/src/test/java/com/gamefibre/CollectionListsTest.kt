@@ -8,7 +8,7 @@ class CollectionListsTest {
     @Test fun deletingBuiltInsPersistsAndRemovesThemFromEveryListPicker() {
         val saved = testPreferences()
         val collection = CollectionData(saved)
-        for (name in listOf("Favorites", "Steam", "GOG", "Epic", "Xbox", "Game Pass", "All games")) {
+        for (name in listOf("Favorites", "Steam", "GOG", "Epic", "Xbox", "Game Pass", "Ubisoft Connect", "EA App", "PlayStation", "Amazon Games", "All games")) {
             collection.list = name
             collection.removeList(name)
             val reopened = CollectionData(saved)

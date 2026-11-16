@@ -5,7 +5,14 @@ import com.gamefibre.stores.StoreGame
 import java.text.Collator
 
 internal enum class LibraryStore(val label: String, val account: GameStore? = null) {
-    STEAM("Steam"), GOG("GOG", GameStore.GOG), EPIC("Epic Games", GameStore.EPIC), XBOX("Xbox", GameStore.XBOX);
+    STEAM("Steam"),
+    GOG("GOG", GameStore.GOG),
+    EPIC("Epic Games", GameStore.EPIC),
+    XBOX("Xbox", GameStore.XBOX),
+    UBISOFT("Ubisoft Connect", GameStore.UBISOFT),
+    EA("EA App", GameStore.EA),
+    PSN("PlayStation", GameStore.PSN),
+    AMAZON("Amazon Games", GameStore.AMAZON);
     val downloads get() = account?.downloads ?: true
 }
 

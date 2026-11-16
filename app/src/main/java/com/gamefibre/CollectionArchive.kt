@@ -34,7 +34,10 @@ internal object CollectionArchive {
             val custom = list.getBoolean("custom")
             val automatic = list.getBoolean("automatic")
             require(!custom || !name.equals(CollectionData.HIDDEN_LIST, true)) { "Hidden is a built-in list." }
-            require(!automatic || (!custom && name in setOf("All games", "Steam", "GOG", "Epic", "Xbox", "Game Pass"))) { "Invalid automatic list." }
+            require(!automatic || (!custom && name in setOf(
+                "All games", "Steam", "GOG", "Epic", "Xbox", "Game Pass",
+                "Ubisoft Connect", "EA App", "PlayStation", "Amazon Games"
+            ))) { "Invalid automatic list." }
             require(strings(list.getJSONArray("games")).all { gameKey.matches(it) }) { "Invalid game identity." }
         }
         val progress = data.getJSONObject("progress")

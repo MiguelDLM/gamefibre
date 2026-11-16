@@ -12,9 +12,10 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /** Store-specific refresh tokens and account IDs; passwords and access tokens are never persisted. */
-internal class StoreTokenVault(context: Context, store: GameStore) {
-    private val prefs = context.getSharedPreferences("store_session_${store.name.lowercase()}", Context.MODE_PRIVATE)
-    private val alias = "gamefibre.store.${store.name.lowercase()}.v1"
+internal class StoreTokenVault(context: Context, store: GameStore, slotId: String = "default") {
+    private val suffix = if (slotId == "default") store.name.lowercase() else "${store.name.lowercase()}_$slotId"
+    private val prefs = context.getSharedPreferences("store_session_$suffix", Context.MODE_PRIVATE)
+    private val alias = "gamefibre.store.$suffix.v1"
     private fun key(): SecretKey {
         val keys = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         return (keys.getKey(alias, null) as? SecretKey) ?: KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
@@ -23,7 +24,7 @@ internal class StoreTokenVault(context: Context, store: GameStore) {
         }.generateKey()
     }
     @Synchronized fun save(refreshToken: String, owner: String) {
-        require(refreshToken.isNotBlank() && owner.matches(Regex("[A-Za-z0-9-]{1,128}")))
+        require(refreshToken.isNotBlank() && owner.matches(Regex("[A-Za-z0-9._-]{1,128}"))) { "Invalid store account identifier." }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
         val plaintext = JSONObject().put("refresh_token", refreshToken).put("owner", owner).toString()
         val bytes = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
@@ -40,7 +41,7 @@ internal class StoreTokenVault(context: Context, store: GameStore) {
                 init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(prefs.getString("iv", ""), Base64.NO_WRAP)))
             }
             JSONObject(String(cipher.doFinal(Base64.decode(data, Base64.NO_WRAP)), Charsets.UTF_8))
-                .also { require(it.getString("refresh_token").isNotBlank() && it.getString("owner").matches(Regex("[A-Za-z0-9-]{1,128}"))) }
+                .also { require(it.getString("refresh_token").isNotBlank() && it.getString("owner").matches(Regex("[A-Za-z0-9._-]{1,128}"))) }
         } catch (error: Exception) {
             if (com.gamefibre.VaultRecovery.isPermanent(error)) clear()
             else android.util.Log.w("StoreTokenVault", "Store session temporarily unreadable: ${error.javaClass.simpleName}")

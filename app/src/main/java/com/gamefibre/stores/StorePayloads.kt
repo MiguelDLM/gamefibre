@@ -12,7 +12,8 @@ internal object StorePayloads {
         when (request.store) {
             GameStore.EPIC -> epic(request,session,io)
             GameStore.GOG -> gog(request,session,io)
-            GameStore.XBOX -> error("Xbox downloads are not supported. Open the game in Xbox instead.")
+            GameStore.XBOX, GameStore.UBISOFT, GameStore.EA, GameStore.PSN, GameStore.AMAZON ->
+                error("${request.store.label} downloads are not supported. Open the game in ${request.store.label} instead.")
         }
     private fun objects(array:JSONArray)=(0 until array.length()).map { array.getJSONObject(it) }
     private fun values(array:JSONArray?)=if(array==null)emptyList()else (0 until array.length()).map { array.get(it).toString() }

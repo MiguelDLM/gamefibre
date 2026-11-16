@@ -31,8 +31,13 @@ internal object StoreApi {
     private val hosts = setOf("auth.gog.com", "embed.gog.com", "api.gog.com", "content-system.gog.com", "launcher-public-service-prod06.ol.epicgames.com", "account-public-service-prod03.ol.epicgames.com",
         "library-service.live.use1a.on.epicgames.com", "catalog-public-service-prod06.ol.epicgames.com")
 
-    fun signIn(store: GameStore, code: String): StoreSession = token(store, "authorization_code", code)
-    fun refresh(store: GameStore, refreshToken: String, owner: String): StoreSession = token(store, "refresh_token", refreshToken, owner)
+    fun signIn(store: GameStore, code: String): StoreSession =
+        if (store in setOf(GameStore.UBISOFT, GameStore.EA, GameStore.PSN, GameStore.AMAZON)) ExtraStoresApi.signIn(store, code)
+        else token(store, "authorization_code", code)
+
+    fun refresh(store: GameStore, refreshToken: String, owner: String): StoreSession =
+        if (store in setOf(GameStore.UBISOFT, GameStore.EA, GameStore.PSN, GameStore.AMAZON)) ExtraStoresApi.refresh(store, refreshToken, owner)
+        else token(store, "refresh_token", refreshToken, owner)
 
     private fun token(store: GameStore, grant: String, value: String, owner: String? = null): StoreSession {
         val refreshing = grant == "refresh_token"
@@ -49,9 +54,10 @@ internal object StoreApi {
                 val basic = Base64.encodeToString("${GameStore.EPIC_CLIENT}:${GameStore.EPIC_SECRET}".toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
                 call("$EPIC_ACCOUNT/account/api/oauth/token", body = form(fields), authorization = "Basic $basic", refreshing = refreshing) as JSONObject
             }
+            else -> return ExtraStoresApi.refresh(store, value, owner.orEmpty())
         }
         val account = response.optString(if (store == GameStore.GOG) "user_id" else "account_id").ifBlank { owner.orEmpty() }
-        require(account.matches(Regex("[A-Za-z0-9-]{1,128}"))) { "The store did not return a usable account. Please sign in again." }
+        require(account.matches(Regex("[A-Za-z0-9._-]{1,128}"))) { "The store did not return a usable account. Please sign in again." }
         check(owner == null || owner == account) { "The store returned a different account. Sign out and connect it again." }
         val access = response.optString("access_token")
         val refresh = response.optString("refresh_token")
@@ -64,6 +70,7 @@ internal object StoreApi {
         GameStore.XBOX -> xbox.library(session)
         GameStore.GOG -> gogLibrary(session)
         GameStore.EPIC -> epicLibrary(session, previous, catalog)
+        GameStore.UBISOFT, GameStore.EA, GameStore.PSN, GameStore.AMAZON -> ExtraStoresApi.library(store, session)
     }
 
     private suspend fun gogLibrary(session: StoreSession): List<StoreGame> {

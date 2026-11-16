@@ -23,7 +23,7 @@ internal data class StoreDownloadRequest(val store:GameStore,val game:StoreGame,
     init {
         require(store.downloads) { "Downloads from this store are not supported." }
         require(game.id.isNotBlank() && game.id.length<=256 && game.name.isNotBlank())
-        require(owner.matches(Regex("[A-Za-z0-9-]{1,128}")))
+        require(owner.matches(Regex("[A-Za-z0-9._-]{1,128}")))
         require(platform in listOf("windows","linux","macos") && (store!=GameStore.EPIC || platform!="linux"))
         require(language in listOf("en","nl","de","fr","es","it","pt","pt-br","pl","ru","ja","ko","zh-hans","zh-hant"))
         require(format in listOf("zip","folder"))

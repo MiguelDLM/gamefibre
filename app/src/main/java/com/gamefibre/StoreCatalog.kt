@@ -88,7 +88,8 @@ internal class StoreCatalog(
                     ids.mapNotNull(games::get)
                 }
             }
-            LibraryStore.EPIC -> error("Epic Games catalog search is unavailable.")
+            LibraryStore.EPIC, LibraryStore.UBISOFT, LibraryStore.EA, LibraryStore.PSN, LibraryStore.AMAZON ->
+                error("${store.label} catalog search is unavailable.")
         }
     }
 

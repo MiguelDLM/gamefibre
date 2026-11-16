@@ -53,7 +53,8 @@ class XboxLoginActivity : AppCompatActivity() {
             try {
                 val code = xboxOAuthCode(uri.toString(), state) ?: return false
                 if (completed) return true
-                StoreAccounts.get(this).signIn(GameStore.XBOX, code)
+                val slotId = intent.getStringExtra("slotId")?.takeIf { it.isNotBlank() } ?: StoreAccounts.DEFAULT_SLOT
+                StoreAccounts.get(this).signIn(GameStore.XBOX, code, slotId)
                 completed = true
                 finish()
             } catch (e: IllegalArgumentException) {

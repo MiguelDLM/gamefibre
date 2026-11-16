@@ -2,6 +2,7 @@ package com.gamefibre.steam
 
 import android.content.Context
 import android.content.Intent
+import com.gamefibre.AppLogs
 import com.gamefibre.DownloadGate
 import com.gamefibre.PrivateFiles
 import com.gamefibre.CollectionData
@@ -139,6 +140,7 @@ class SteamEngine internal constructor(private val context: android.app.Applicat
         check(snapshot().getString("status") == "signedOut") { "Sign-in is already in progress" }
         stopped = false
         val restoring = login == null && snapshot().optBoolean("sessionAvailable")
+        AppLogs.log("Steam", "Starting sign-in (mode=${if (restoring) "restore" else if (login == null) "qr" else "password"})")
         credentials = null
         pendingLogin = login
         authSession = null
@@ -158,6 +160,7 @@ class SteamEngine internal constructor(private val context: android.app.Applicat
             try { connect(login, forceLibraryRefresh, restoring) }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) {
+                AppLogs.error("Steam", "Connection setup failed", e)
                 synchronized(this@SteamEngine) {
                     if (isActive && connectionJob === coroutineContext[Job] && !stopped)
                         failConnection("Could not connect to Steam. Check your connection.")
@@ -186,6 +189,7 @@ class SteamEngine internal constructor(private val context: android.app.Applicat
         val subscriptions = mutableListOf<java.io.Closeable>()
         subscriptions += manager.subscribe(ConnectedCallback::class.java) {
             if (local !== client || stopped) return@subscribe
+            AppLogs.log("Steam", "Connected to Steam CM")
             // A repeated connect callback must not consume the same sign-in twice.
             // This also covers the interval before Steam returns an auth session.
             if (authJob?.isActive == true) return@subscribe
@@ -204,9 +208,11 @@ class SteamEngine internal constructor(private val context: android.app.Applicat
                                 pendingLogin.also { pendingLogin = null }
                             }
                             val result = if (snapshot().optString("authMethod") == "qr") {
+                                AppLogs.log("Steam", "Requesting QR auth session")
                                 val session = local.authentication.beginAuthSessionViaQR(details).await()
                                 stage = "guard"
                                 authSession = session
+                                AppLogs.log("Steam", "QR auth session started (pollInterval=${session.pollingInterval}s)")
                                 session.challengeUrlChanged = `in`.dragonbra.javasteam.steam.authentication.IChallengeUrlChanged { changed ->
                                     if (local === client && !stopped) update { it.put("challengeUrl", changed?.challengeUrl) }
                                 }
@@ -219,6 +225,7 @@ class SteamEngine internal constructor(private val context: android.app.Applicat
                                 response
                             } else {
                                 checkNotNull(passwordLogin) { "Password sign-in was interrupted. Please try again." }
+                                AppLogs.log("Steam", "Requesting credential auth session")
                                 val session = try {
                                     details.username = passwordLogin.username
                                     details.password = String(passwordLogin.password)
@@ -248,12 +255,14 @@ class SteamEngine internal constructor(private val context: android.app.Applicat
                             if (local === client && snapshot().optString("status") in listOf("loggingIn", "restoring")) failConnection("Steam login timed out. Try again.")
                         }
                         withTimeout(30_000) { while (!local.isConnected) delay(250) }
+                        AppLogs.log("Steam", "Sending token logon (cellID=${local.configuration.cellID})")
                         local.send(tokenLogonMessage(credential, local.configuration.cellID))
                     }
                 } catch (e: Exception) {
+                    AppLogs.error("Steam", "Auth failed at stage=$stage", e)
                     if (local === client && !stopped && (e !is CancellationException || e is TimeoutCancellationException)) failConnection(when {
                         e is TimeoutCancellationException -> "Steam sign-in expired. Please try again."
-                        e is AuthenticationException && e.result == EResult.InvalidPassword -> "Steam did not accept that account name or password. Please try again."
+                        e is AuthenticationException && e.result == EResult.InvalidPassword -> "Steam did not accept that account name or password (InvalidPassword). Make sure you enter your Steam account login name, not your email or profile name."
                         e is AuthenticationException -> "Steam could not complete sign-in (${e.result}). Please try again."
                         stage == "saving" -> "Steam approved sign-in, but the session could not be saved on this device. Please try again."
                         stage == "loggingOn" -> "Steam approved sign-in. Reconnect to finish using the saved session."
@@ -266,12 +275,14 @@ class SteamEngine internal constructor(private val context: android.app.Applicat
             synchronized(this@SteamEngine) {
                 if (local !== client || stopped) return@subscribe
                 if (result.result != EResult.OK) {
+                    AppLogs.error("Steam", "LoggedOnCallback failed: result=${result.result}, extended=${result.extendedResult}")
                     // Service outages and rate limits do not invalidate a saved session.
                     val expired = result.result in listOf(EResult.InvalidPassword, EResult.Expired)
                     if (expired) vault.invalidate()
                     failConnection(if (expired) "Your Steam session expired. Sign in again to continue."
                         else "Steam could not reconnect (${result.result}). Please try again.")
                 } else {
+                    AppLogs.log("Steam", "Signed in to Steam (cellID=${result.cellID})")
                     authSession = null; reconnects = 0
                     update { it.put("status", "signedIn").put("account", currentOwner()).put("sessionAvailable", true).remove("challengeUrl") }
                     val cachedLibrary = libraryCache.load(currentOwner())
@@ -297,6 +308,7 @@ class SteamEngine internal constructor(private val context: android.app.Applicat
         }
         subscriptions += manager.subscribe(DisconnectedCallback::class.java) {
             if (local !== client || stopped) return@subscribe
+            AppLogs.log("Steam", "Disconnected from Steam CM (userInitiated=${it.isUserInitiated}, reconnects=$reconnects)")
             // Steam disconnects unauthenticated clients after ~60 s. Keep the Guard session alive.
             if (authSession != null && authJob?.isActive == true && reconnects++ < 5) {
                 scope.launch { delay(1000); if (local === client && !stopped) local.connect() }
@@ -314,6 +326,7 @@ class SteamEngine internal constructor(private val context: android.app.Applicat
             if (local === client && snapshot().optString("status") in listOf("connecting", "restoring")) failConnection("Steam connection timed out. Try again.")
         }
         try {
+            AppLogs.log("Steam", "Opening WebSocket connection to Steam CM")
             local.connect()
             while (currentCoroutineContext().isActive && local === client && !stopped) manager.runWaitCallbacks(500L)
         } finally { subscriptions.forEach { runCatching { it.close() } } }
@@ -374,6 +387,7 @@ class SteamEngine internal constructor(private val context: android.app.Applicat
         try { return flow.awaitResult() } finally { if (guardFlow === flow) guardFlow = null }
     }
     @Synchronized private fun failConnection(message: String) {
+        AppLogs.error("Steam", "failConnection: $message")
         val resuming = resumeAfterReconnect.pending != null
         resumeAfterReconnect.clear()
         stopped = true
@@ -491,6 +505,7 @@ class SteamEngine internal constructor(private val context: android.app.Applicat
                     }
                 }
             } catch (e: Exception) {
+                AppLogs.error("Steam", "Library refresh failed", e)
                 if (isActive) update { it.put("connectionError", e.message ?: "Could not load your Steam library") }
             } finally { if (local === client) update { it.put("libraryLoading", false) } }
         }

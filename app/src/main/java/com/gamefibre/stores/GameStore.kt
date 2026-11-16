@@ -4,7 +4,13 @@ import android.net.Uri
 import org.json.JSONObject
 
 internal enum class GameStore(val label: String, val downloads: Boolean = true) {
-    GOG("GOG"), EPIC("Epic Games"), XBOX("Xbox", downloads = false);
+    GOG("GOG"),
+    EPIC("Epic Games"),
+    XBOX("Xbox", downloads = false),
+    UBISOFT("Ubisoft Connect", downloads = false),
+    EA("EA App", downloads = false),
+    PSN("PlayStation", downloads = false),
+    AMAZON("Amazon Games", downloads = false);
 
     val loginUrl: String get() = when (this) {
         XBOX -> XboxApi.loginUrl
@@ -13,10 +19,18 @@ internal enum class GameStore(val label: String, val downloads: Boolean = true) 
             .appendQueryParameter("redirect_uri", GOG_REDIRECT).appendQueryParameter("response_type", "code").build().toString()
         EPIC -> Uri.parse("https://www.epicgames.com/id/login").buildUpon()
             .appendQueryParameter("redirectUrl", "https://www.epicgames.com/id/api/redirect?clientId=$EPIC_CLIENT&responseType=code").build().toString()
+        UBISOFT -> ""
+        EA -> ExtraStoresApi.EA_LOGIN_URL
+        PSN -> ExtraStoresApi.PSN_LOGIN_URL
+        AMAZON -> ""
     }
 
     fun authorizationCode(pasted: String): String {
         val text = pasted.trim()
+        if (this in setOf(UBISOFT, EA, PSN, AMAZON)) {
+            require(text.isNotBlank()) { "Sign-in data cannot be empty." }
+            return text
+        }
         require(text.length in 4..16384) { "Paste the sign-in code or the final address from your browser." }
         val code = when {
             text.startsWith("{") && this == EPIC -> runCatching { JSONObject(text).getString("authorizationCode") }.getOrNull()
@@ -26,6 +40,7 @@ internal enum class GameStore(val label: String, val downloads: Boolean = true) 
                     XBOX -> uri.host == "login.live.com" && uri.path == "/oauth20_desktop.srf"
                     GOG -> uri.host == "embed.gog.com" && uri.path == "/on_login_success"
                     EPIC -> uri.host == "www.epicgames.com" && uri.path == "/id/api/redirect"
+                    else -> false
                 }
                 require(valid) { "Use the final $label sign-in address, or paste just its code." }
                 uri.getQueryParameter("code") ?: uri.getQueryParameter("authorizationCode")
