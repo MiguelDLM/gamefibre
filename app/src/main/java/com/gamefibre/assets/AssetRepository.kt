@@ -218,7 +218,7 @@ internal class AssetRepository internal constructor(
         val cached=store.steam(id)
         val refresh=job.key in refreshKeys
         if(cached!=null && System.currentTimeMillis()-cached.second<(if(refresh)30_000 else if(cached.first.portrait.isBlank() && cached.first.landscape.isBlank())300_000 else 24*60*60*1000))return
-        val ids=(listOf(id)+store.queued().mapNotNull { queued -> store.candidate(queued.key)?.takeIf { it.details.portrait.isBlank() && custom.address(it.key)==null }?.let { gameSteam[queued.key] } }).distinct().filter { candidate ->
+        val ids=(listOf(id)+store.queued().filter { job.priority > 0 || it.priority == 0 }.mapNotNull { queued -> store.candidate(queued.key)?.takeIf { it.details.portrait.isBlank() && custom.address(it.key)==null }?.let { gameSteam[queued.key] } }).distinct().filter { candidate ->
             store.steam(candidate)?.let { System.currentTimeMillis()-it.second<(if(refresh)30_000 else if(it.first.portrait.isBlank() && it.first.landscape.isBlank())300_000 else 24*60*60*1000) } != true
         }.take(50)
         if(ids.isEmpty())return

@@ -64,4 +64,76 @@ class ExtraStoresAndPricesTest {
         assertEquals("₺340.00 TRY", ExchangeRates.format(340.0, "TRY"))
         assertEquals("R$58.00 BRL", ExchangeRates.format(58.0, "BRL"))
     }
+
+    @Test fun ubisoftDemuxParsesOwnedGamesAndYamlConfig() {
+        val yamlDirect = """
+            version: 2.0
+            root:
+              name: "Assassin's Creed Revelations"
+        """.trimIndent()
+        val yamlLoc = """
+            version: 2.0
+            root:
+              name: GAMENAME
+            localizations:
+              default:
+                GAMENAME: Assassin's Creed Rogue
+        """.trimIndent()
+
+        fun pb(block: (com.google.protobuf.CodedOutputStream) -> Unit): ByteArray {
+            val baos = java.io.ByteArrayOutputStream()
+            val cos = com.google.protobuf.CodedOutputStream.newInstance(baos)
+            block(cos)
+            cos.flush()
+            return baos.toByteArray()
+        }
+
+        val game1 = pb {
+            it.writeUInt32(1, 40)
+            it.writeUInt32(8, 0) // ProductType_Game
+            it.writeString(17, yamlDirect)
+            it.writeBool(20, true)
+            it.writeString(30, "space-rev")
+        }
+        val dlc = pb {
+            it.writeUInt32(1, 41)
+            it.writeUInt32(8, 1) // ProductType_AddOn (must be filtered out)
+            it.writeString(17, yamlDirect)
+            it.writeBool(20, true)
+        }
+        val unowned = pb {
+            it.writeUInt32(1, 42)
+            it.writeUInt32(8, 0)
+            it.writeString(17, yamlLoc)
+            it.writeBool(20, false) // not owned (must be filtered out)
+        }
+        val game2 = pb {
+            it.writeUInt32(1, 43)
+            it.writeUInt32(8, 0)
+            it.writeString(17, yamlLoc)
+            it.writeBool(20, true)
+        }
+        val ownedGames = pb {
+            it.writeByteArray(1, game1)
+            it.writeByteArray(1, dlc)
+            it.writeByteArray(1, unowned)
+            it.writeByteArray(1, game2)
+        }
+        val initRsp = pb {
+            it.writeBool(1, true)
+            it.writeByteArray(2, ownedGames)
+        }
+        val rsp = pb {
+            it.writeUInt32(1, 1)
+            it.writeByteArray(2, initRsp)
+        }
+        val downstream = pb { it.writeByteArray(1, rsp) }
+
+        val parsed = com.gamefibre.stores.UbisoftDemuxClient.parseOwnershipDownstream(downstream)
+        assertEquals(2, parsed.size)
+        assertEquals("Assassin's Creed Revelations", parsed[0].name)
+        assertEquals("space-rev", parsed[0].spaceId)
+        assertEquals("Assassin's Creed Rogue", parsed[1].name)
+        assertEquals(43, parsed[1].productId)
+    }
 }

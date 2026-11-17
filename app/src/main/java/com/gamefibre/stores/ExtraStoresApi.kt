@@ -139,7 +139,7 @@ internal object ExtraStoresApi {
             return UbisoftAuthResult.TwoFactorRequired(pending2fa)
         }
         com.gamefibre.AppLogs.log("UBISOFT", "Ubisoft sign-in succeeded")
-        return UbisoftAuthResult.Success(parseUbisoftSession(json, expectedOwner = null))
+        return UbisoftAuthResult.Success(parseUbisoftSession(json, expectedOwner = null, fallbackLabel = email.trim()))
     }
 
     private fun ubisoftRefresh(rememberMeTicket: String, owner: String): StoreSession {
@@ -161,11 +161,13 @@ internal object ExtraStoresApi {
         json: JSONObject,
         expectedOwner: String?,
         fallbackRefresh: String = "",
+        fallbackLabel: String = "",
     ): StoreSession {
         val ticket = json.ubiText("ticket")
         val sessionId = json.ubiText("sessionId")
         val userId = json.ubiText("userId").ifBlank { expectedOwner.orEmpty() }
         val rememberMe = json.ubiText("rememberMeTicket").ifBlank { fallbackRefresh }
+        val label = fallbackLabel.ifBlank { json.ubiText("nameOnPlatform").ifBlank { json.ubiText("username") } }
         check(ticket.isNotBlank() && userId.isNotBlank() && rememberMe.isNotBlank()) {
             "Ubisoft did not return a complete session. Try signing in again."
         }
@@ -174,7 +176,7 @@ internal object ExtraStoresApi {
         }
         val accessPayload = JSONObject().put("ticket", ticket).put("sessionId", sessionId).toString()
         // Ubisoft tickets last ~3 hours; refresh proactively after 2 hours.
-        return StoreSession(accessPayload, rememberMe, userId, System.currentTimeMillis() + 2 * 3600_000L)
+        return StoreSession(accessPayload, rememberMe, userId, System.currentTimeMillis() + 2 * 3600_000L, label)
     }
 
     private suspend fun ubisoftLibrary(session: StoreSession): List<StoreGame> {
@@ -182,6 +184,43 @@ internal object ExtraStoresApi {
         val auth = JSONObject(session.accessToken)
         val ticket = auth.getString("ticket")
         val sessionId = auth.optString("sessionId")
+        val graphqlGames = ubisoftGraphqlLibrary(ticket, sessionId)
+        val demuxGames = try {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                UbisoftDemuxClient.fetchOwnedGames(ticket)
+            }
+        } catch (error: StoreSessionExpired) {
+            throw error
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            com.gamefibre.AppLogs.error("UBISOFT", "Demux ownership_service fallback to GraphQL only", error)
+            emptyList()
+        }
+        if (demuxGames.isEmpty()) return graphqlGames
+
+        val merged = linkedMapOf<String, StoreGame>()
+        val seenNames = hashSetOf<String>()
+        graphqlGames.forEach { game ->
+            merged[game.id] = game
+            seenNames.add(normalizeUbisoftTitle(game.name))
+        }
+        demuxGames.forEach { product ->
+            val gid = product.spaceId.ifBlank { product.productId.toString() }
+            val norm = normalizeUbisoftTitle(product.name)
+            if (gid !in merged && (norm.isEmpty() || norm !in seenNames)) {
+                merged[gid] = StoreGame(gid, product.name)
+                if (norm.isNotEmpty()) seenNames.add(norm)
+            }
+        }
+        com.gamefibre.AppLogs.log("UBISOFT", "Ubisoft library merged: graphql=${graphqlGames.size}, demux=${demuxGames.size}, total=${merged.size}")
+        return merged.values.sortedBy { it.name.lowercase() }
+    }
+
+    private fun normalizeUbisoftTitle(name: String): String =
+        name.lowercase().replace(Regex("[^a-z0-9]"), "")
+
+    private suspend fun ubisoftGraphqlLibrary(ticket: String, sessionId: String): List<StoreGame> {
+        coroutineContext.ensureActive()
         val query = """
             query Games {
                 viewer {
@@ -249,32 +288,42 @@ internal object ExtraStoresApi {
             }.getOrElse { exchangeEaRemid(raw) }
         }
         require(accessToken.isNotBlank()) { "Could not find a valid EA access token or remid cookie." }
-        val pidId = validateEaAccessToken(accessToken)
+        val (pidId, eaLabel) = validateEaAccessToken(accessToken)
         val refresh = remid ?: "token:$accessToken"
-        return StoreSession(accessToken, refresh, pidId, System.currentTimeMillis() + 3600_000L)
+        return StoreSession(accessToken, refresh, pidId, System.currentTimeMillis() + 3600_000L, eaLabel)
     }
 
     private fun eaRefresh(refreshToken: String, owner: String): StoreSession {
         if (refreshToken.startsWith("token:")) {
             val token = refreshToken.removePrefix("token:")
-            val pidId = runCatching { validateEaAccessToken(token) }.getOrNull() ?: throw StoreSessionExpired()
+            val (pidId, eaLabel) = runCatching { validateEaAccessToken(token) }.getOrNull() ?: throw StoreSessionExpired()
             check(pidId == owner) { "EA returned a different account." }
-            return StoreSession(token, refreshToken, pidId, System.currentTimeMillis() + 3600_000L)
+            return StoreSession(token, refreshToken, pidId, System.currentTimeMillis() + 3600_000L, eaLabel)
         }
         val accessToken = exchangeEaRemid(refreshToken)
-        val pidId = validateEaAccessToken(accessToken)
+        val (pidId, eaLabel) = validateEaAccessToken(accessToken)
         check(pidId == owner) { "EA returned a different account." }
-        return StoreSession(accessToken, refreshToken, pidId, System.currentTimeMillis() + 3600_000L)
+        return StoreSession(accessToken, refreshToken, pidId, System.currentTimeMillis() + 3600_000L, eaLabel)
     }
 
-    private fun validateEaAccessToken(accessToken: String): String {
+    private fun validateEaAccessToken(accessToken: String): Pair<String, String> {
         val uri = Http.validate("https://gateway.ea.com/proxy/identity/pids/me", hosts)
-        val response = Http.exchange(uri, headers = mapOf("Authorization" to "Bearer $accessToken"))
+        val response = Http.exchange(uri, headers = mapOf("Authorization" to "Bearer $accessToken", "X-Expand-Results" to "true"))
         if (response.status == 401 || response.status == 403) throw StoreSessionExpired()
         if (!response.ok) throw IllegalStateException("EA rejected the access token (HTTP ${response.status}).")
-        val pidId = JSONObject(response.text).optJSONObject("pid")?.optString("pidId").orEmpty()
+        val pid = JSONObject(response.text).optJSONObject("pid")
+        val pidId = pid?.optString("pidId").orEmpty()
         require(pidId.isNotBlank()) { "EA did not return a valid pidId." }
-        return pidId
+        var label = pid?.optString("email")?.takeIf { it.isNotBlank() && it != "null" }.orEmpty()
+        if (label.isBlank()) {
+            val personaUri = Http.validate("https://gateway.ea.com/proxy/identity/pids/$pidId/personas?namespaceName=cem_ea_id", hosts)
+            val personaResp = runCatching { Http.exchange(personaUri, headers = mapOf("Authorization" to "Bearer $accessToken", "X-Expand-Results" to "true")) }.getOrNull()
+            val personas = personaResp?.takeIf { it.ok }?.let { runCatching { JSONObject(it.text).optJSONObject("personas")?.optJSONArray("persona") }.getOrNull() }
+            if (personas != null && personas.length() > 0) {
+                label = personas.optJSONObject(0)?.optString("displayName")?.takeIf { it.isNotBlank() && it != "null" }.orEmpty()
+            }
+        }
+        return pidId to label
     }
 
     private fun exchangeEaRemid(remid: String): String {
@@ -395,9 +444,19 @@ internal object ExtraStoresApi {
         val refresh = json.optString("refresh_token")
         check(access.isNotBlank() && refresh.isNotBlank()) { "PlayStation did not return a valid session." }
         val owner = expectedOwner ?: extractJwtAccountId(access) ?: "psn"
+        val label = extractJwtField(json.optString("id_token"), "online_id")
+            ?: extractJwtField(json.optString("id_token"), "email")
+            ?: extractJwtField(access, "online_id")
+            ?: ""
         val expiresIn = json.optLong("expires_in", 3600).coerceIn(60, 30 * 86400)
-        return StoreSession(access, refresh, owner, System.currentTimeMillis() + expiresIn * 1000L)
+        return StoreSession(access, refresh, owner, System.currentTimeMillis() + expiresIn * 1000L, label)
     }
+
+    private fun extractJwtField(jwt: String, key: String): String? = runCatching {
+        val part = jwt.split('.').getOrNull(1) ?: return null
+        val decoded = String(Base64.decode(part, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP), Charsets.UTF_8)
+        JSONObject(decoded).optString(key).takeIf { it.isNotBlank() && it != "null" }
+    }.getOrNull()
 
     private fun extractJwtAccountId(jwt: String): String? = runCatching {
         val part = jwt.split('.').getOrNull(1) ?: return null
@@ -536,10 +595,13 @@ internal object ExtraStoresApi {
         val bearer = root?.optJSONObject("tokens")?.optJSONObject("bearer")
         val access = bearer?.optString("access_token").orEmpty()
         val refresh = bearer?.optString("refresh_token").orEmpty()
-        val owner = root?.optJSONObject("extensions")?.optJSONObject("customer_info")?.optString("user_id")
-            ?.takeIf { it.isNotBlank() } ?: serial
+        val customerInfo = root?.optJSONObject("extensions")?.optJSONObject("customer_info")
+        val owner = customerInfo?.optString("user_id")?.takeIf { it.isNotBlank() } ?: serial
+        val label = customerInfo?.optString("email")?.takeIf { it.isNotBlank() && it != "null" }
+            ?: customerInfo?.optString("name")?.takeIf { it.isNotBlank() && it != "null" }
+            ?: ""
         check(access.isNotBlank() && refresh.isNotBlank()) { "Amazon did not return valid tokens." }
-        return StoreSession(access, "$refresh|$serial", owner, System.currentTimeMillis() + 3000_000L)
+        return StoreSession(access, "$refresh|$serial", owner, System.currentTimeMillis() + 3000_000L, label)
     }
 
     private fun amazonRefresh(refreshAndSerial: String, owner: String): StoreSession {
@@ -557,8 +619,19 @@ internal object ExtraStoresApi {
         if (!resp.ok) throw IllegalStateException("Amazon session refresh failed (HTTP ${resp.status}).")
         val access = JSONObject(resp.text).optString("access_token")
         if (access.isBlank()) throw StoreSessionExpired()
-        return StoreSession(access, "$refresh|$serial", owner, System.currentTimeMillis() + 3000_000L)
+        val label = fetchAmazonProfileLabel(access)
+        return StoreSession(access, "$refresh|$serial", owner, System.currentTimeMillis() + 3000_000L, label)
     }
+
+    private fun fetchAmazonProfileLabel(accessToken: String): String = runCatching {
+        val uri = Http.validate("https://api.amazon.com/user/profile", hosts)
+        val resp = Http.exchange(uri, headers = mapOf("Authorization" to "Bearer $accessToken"))
+        if (!resp.ok) return@runCatching ""
+        val json = JSONObject(resp.text)
+        json.optString("email").takeIf { it.isNotBlank() && it != "null" }
+            ?: json.optString("name").takeIf { it.isNotBlank() && it != "null" }
+            ?: ""
+    }.getOrDefault("")
 
     private suspend fun amazonLibrary(session: StoreSession): List<StoreGame> {
         val serial = session.refreshToken.substringAfter('|', UUID.randomUUID().toString().replace("-", "").uppercase())
