@@ -23,16 +23,19 @@ internal class StoreTokenVault(context: Context, store: GameStore, slotId: Strin
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
         }.generateKey()
     }
-    @Synchronized fun save(refreshToken: String, owner: String) {
+    @Synchronized fun save(refreshToken: String, owner: String, label: String = "") {
         require(refreshToken.isNotBlank() && owner.matches(Regex("[A-Za-z0-9._-]{1,128}"))) { "Invalid store account identifier." }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
-        val plaintext = JSONObject().put("refresh_token", refreshToken).put("owner", owner).toString()
+        val plaintext = JSONObject().put("refresh_token", refreshToken).put("owner", owner).apply {
+            if (label.isNotBlank()) put("label", label)
+        }.toString()
         val bytes = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
         check(prefs.edit().clear().putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
             .putString("data", Base64.encodeToString(bytes, Base64.NO_WRAP)).commit()) { "Could not save the account session." }
     }
     @Synchronized fun read(): JSONObject? = stored()?.takeUnless { prefs.getBoolean("rejected", false) }
     @Synchronized fun owner(): String? = stored()?.getString("owner")
+    @Synchronized fun label(): String? = stored()?.optString("label")?.takeIf { it.isNotBlank() && it != "null" }
     @Synchronized fun invalidate() { check(prefs.edit().putBoolean("rejected", true).commit()) { "Could not update the account session." } }
     private fun stored(): JSONObject? {
         val data = prefs.getString("data", null) ?: return null

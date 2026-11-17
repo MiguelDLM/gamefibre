@@ -18,7 +18,13 @@ import kotlin.coroutines.coroutineContext
 
 internal class StoreSessionExpired : IllegalStateException("Your saved session expired. Sign in again to continue.")
 internal class StoreDownloadDenied : IllegalStateException("The store did not grant access to this build. Check its platform and your account's license.")
-internal data class StoreSession(val accessToken: String, val refreshToken: String, val owner: String, val expiresAt: Long)
+internal data class StoreSession(
+    val accessToken: String,
+    val refreshToken: String,
+    val owner: String,
+    val expiresAt: Long,
+    val label: String = "",
+)
 
 /** Protocol references are linked in README. No third-party launcher code is bundled. */
 internal object StoreApi {
@@ -63,7 +69,27 @@ internal object StoreApi {
         val refresh = response.optString("refresh_token")
         check(access.isNotBlank() && refresh.isNotBlank()) { "The store did not return a usable session. Please sign in again." }
         val lifetime = response.optLong("expires_in", 3600).coerceIn(1, 30 * 86400)
-        return StoreSession(access, refresh, account, System.currentTimeMillis() + lifetime * 1000)
+        val label = when (store) {
+            GameStore.EPIC -> {
+                val displayName = response.optString("displayName").takeIf { it.isNotBlank() && it != "null" }.orEmpty()
+                val profile = runCatching {
+                    call("$EPIC_ACCOUNT/account/api/public/account/$account", authorization = "Bearer $access", refreshing = refreshing) as? JSONObject
+                }.getOrNull()
+                profile?.optString("email")?.takeIf { it.isNotBlank() && it != "null" }
+                    ?: profile?.optString("displayName")?.takeIf { it.isNotBlank() && it != "null" }
+                    ?: displayName
+            }
+            GameStore.GOG -> {
+                val profile = runCatching {
+                    call("https://embed.gog.com/userData.json", authorization = "Bearer $access", refreshing = refreshing) as? JSONObject
+                }.getOrNull()
+                profile?.optString("email")?.takeIf { it.isNotBlank() && it != "null" }
+                    ?: profile?.optString("username")?.takeIf { it.isNotBlank() && it != "null" }
+                    ?: ""
+            }
+            else -> ""
+        }
+        return StoreSession(access, refresh, account, System.currentTimeMillis() + lifetime * 1000, label)
     }
 
     suspend fun library(store: GameStore, session: StoreSession, previous: List<StoreGame>, catalog: com.gamefibre.assets.AssetStore): List<StoreGame> = when (store) {

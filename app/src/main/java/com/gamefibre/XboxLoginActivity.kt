@@ -65,6 +65,10 @@ class XboxLoginActivity : AppCompatActivity() {
             }
             return true
         }
+        val slotId = intent.getStringExtra("slotId")?.takeIf { it.isNotBlank() } ?: StoreAccounts.DEFAULT_SLOT
+        if (slotId != StoreAccounts.DEFAULT_SLOT) {
+            android.webkit.CookieManager.getInstance().apply { removeAllCookies(null); flush() }
+        }
         val view = WebView(this).apply {
             settings.javaScriptEnabled = true; settings.domStorageEnabled = true
             settings.allowFileAccess = false; settings.allowContentAccess = false

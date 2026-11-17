@@ -84,14 +84,21 @@ internal class StoreAccounts internal constructor(private val context: Context) 
 
     private val mutableSlots = MutableStateFlow(
         GameStore.entries.associateWith { store ->
-            readSlotIds(store).map { slotId ->
+            val seenOwners = hashSetOf<String>()
+            readSlotIds(store).mapNotNull { slotId ->
                 val vault = vaultFor(store, slotId)
                 val saved = vault.read()
                 val owner = vault.owner()
+                if (slotId != DEFAULT_SLOT && owner != null && !seenOwners.add(owner)) {
+                    vault.clear(); fileFor(store, slotId).delete(); unregisterSlotId(store, slotId)
+                    return@mapNotNull null
+                }
+                if (owner != null) seenOwners.add(owner)
+                val label = vault.label() ?: saved?.optString("label")?.takeIf { it.isNotBlank() && it != "null" }
                 val cached = owner?.let { loadLibrary(store, slotId, it) }
                 StoreAccountSlot(
                     slotId,
-                    StoreAccount(owner = owner, saved = saved != null, games = cached.orEmpty(), libraryLoaded = cached != null),
+                    StoreAccount(owner = owner, label = label, saved = saved != null, games = cached.orEmpty(), libraryLoaded = cached != null),
                 )
             }
         }
@@ -117,6 +124,7 @@ internal class StoreAccounts internal constructor(private val context: Context) 
         }
         return StoreAccount(
             owner = slots.firstOrNull { it.account.owner != null }?.account?.owner,
+            label = slots.firstOrNull { !it.account.label.isNullOrBlank() }?.account?.label,
             saved = slots.any { it.account.saved },
             connected = slots.any { it.account.connected },
             loading = slots.any { it.account.loading },
@@ -182,8 +190,9 @@ internal class StoreAccounts internal constructor(private val context: Context) 
             currentCoroutineContext().ensureActive()
             synchronized(lockFor(store, slotId)) {
                 check((generations[key] ?: 0) == revision) { "The account changed. Resume after signing in again." }
-                vaultFor(store, slotId).save(session.refreshToken, session.owner); sessions[key] = session
-                updateSlot(store, slotId) { it.copy(owner = session.owner, saved = true, connected = true) }
+                val label = session.label.ifBlank { vaultFor(store, slotId).label().orEmpty() }
+                vaultFor(store, slotId).save(session.refreshToken, session.owner, label); sessions[key] = session
+                updateSlot(store, slotId) { it.copy(owner = session.owner, label = label.ifBlank { it.label }, saved = true, connected = true) }
             }
             session
         }
@@ -208,7 +217,7 @@ internal class StoreAccounts internal constructor(private val context: Context) 
                 perform(store, id, fetchLibrary = fetchLibrary) {
                     val key = SlotKey(store, id)
                     val session = sessions[key]
-                    if (session != null && session.expiresAt > System.currentTimeMillis() + 60_000) session
+                    if (session != null && session.expiresAt > System.currentTimeMillis() + 60_000 && session.label.isNotBlank()) session
                     else {
                         val saved = vaultFor(store, id).read() ?: throw StoreSessionExpired()
                         StoreApi.refresh(store, saved.getString("refresh_token"), saved.getString("owner"))
@@ -277,15 +286,25 @@ internal class StoreAccounts internal constructor(private val context: Context) 
                         if ((generations[key] ?: 0) != revision) return@launch
                         val previousOwner = vaultFor(store, slotId).owner()
                         val sameOwner = previousOwner == result.owner
+                        if (authenticating && slotId != DEFAULT_SLOT &&
+                            mutableSlots.value.getValue(store).any { it.slotId != slotId && it.account.owner == result.owner }
+                        ) {
+                            clearSlot(store, slotId, removeSlot = true)
+                            throw IllegalStateException("This ${store.label} account is already connected.")
+                        }
                         if (!sameOwner && slotId == DEFAULT_SLOT) {
                             StoreDownloads.get(context).forgetAccount(store)
                         }
-                        vaultFor(store, slotId).save(result.refreshToken, result.owner)
+                        val effectiveLabel = result.label.ifBlank {
+                            if (sameOwner) slotAccount.label ?: vaultFor(store, slotId).label().orEmpty() else ""
+                        }
+                        vaultFor(store, slotId).save(result.refreshToken, result.owner, effectiveLabel)
                         if (authenticating && !sameOwner) fileFor(store, slotId).delete()
                         sessions[key] = result
                         updateSlot(store, slotId) {
                             StoreAccount(
                                 owner = result.owner,
+                                label = effectiveLabel.ifBlank { null },
                                 saved = true,
                                 connected = true,
                                 loading = true,
@@ -314,7 +333,8 @@ internal class StoreAccounts internal constructor(private val context: Context) 
                         vaultFor(store, slotId).read()?.getString("refresh_token") ?: throw StoreSessionExpired(),
                         current.owner,
                     )
-                    vaultFor(store, slotId).save(refreshed.refreshToken, refreshed.owner)
+                    val refreshedLabel = refreshed.label.ifBlank { vaultFor(store, slotId).label().orEmpty() }
+                    vaultFor(store, slotId).save(refreshed.refreshToken, refreshed.owner, refreshedLabel)
                     sessions[key] = refreshed
                     current = refreshed
                     StoreApi.library(store, current, previous, com.gamefibre.assets.AssetTransport.get(context).store)

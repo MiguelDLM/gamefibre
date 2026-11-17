@@ -32,6 +32,7 @@ import `in`.dragonbra.javasteam.steam.handlers.steamapps.SteamApps
 import `in`.dragonbra.javasteam.steam.handlers.steamapps.callback.LicenseListCallback
 import `in`.dragonbra.javasteam.steam.handlers.steamunifiedmessages.SteamUnifiedMessages
 import `in`.dragonbra.javasteam.steam.handlers.steamuser.SteamUser
+import `in`.dragonbra.javasteam.steam.handlers.steamuser.callback.AccountInfoCallback
 import `in`.dragonbra.javasteam.steam.handlers.steamuser.callback.LoggedOnCallback
 import `in`.dragonbra.javasteam.steam.handlers.steamuser.callback.LoggedOffCallback
 import `in`.dragonbra.javasteam.steam.steamclient.SteamClient
@@ -296,6 +297,11 @@ class SteamEngine internal constructor(private val context: android.app.Applicat
                 }
             }
         }
+        subscriptions += manager.subscribe(AccountInfoCallback::class.java) { info ->
+            if (local === client && !stopped && info.personaName.isNotBlank()) {
+                update { it.put("accountName", info.personaName) }
+            }
+        }
         subscriptions += manager.subscribe(LicenseListCallback::class.java) { result ->
             synchronized(this@SteamEngine) {
                 if (local !== client || stopped) return@subscribe
@@ -420,7 +426,7 @@ class SteamEngine internal constructor(private val context: android.app.Applicat
         authJob?.cancel(); connectionJob?.cancel(); libraryJob?.cancel()
         client?.disconnect(); client = null; authSession = null; credentials = null; vault.clear()
         forgetAccountData()
-        update { clearGuardState(it); it.put("status", "signedOut").put("sessionAvailable", false).put("libraryCached", false).put("games", JSONArray()).put("libraryLoading", false).remove("account"); it.remove("challengeUrl"); it.remove("error"); it.remove("connectionError") }
+        update { clearGuardState(it); it.put("status", "signedOut").put("sessionAvailable", false).put("libraryCached", false).put("games", JSONArray()).put("libraryLoading", false).remove("account"); it.remove("accountName"); it.remove("challengeUrl"); it.remove("error"); it.remove("connectionError") }
     }
     private fun forgetAccountData() {
         cleanup.mark("STEAM")

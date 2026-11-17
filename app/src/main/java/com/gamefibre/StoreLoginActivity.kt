@@ -144,6 +144,9 @@ class StoreLoginActivity : AppCompatActivity() {
                 showError("${store.label} could not complete sign-in. Try signing in again."); true
             }
         }
+        if (slotId != StoreAccounts.DEFAULT_SLOT) {
+            CookieManager.getInstance().apply { removeAllCookies(null); flush() }
+        }
         val view = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true

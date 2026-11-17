@@ -97,7 +97,20 @@ internal class XboxApi(private val request: (XboxRequest) -> JSONObject = ::requ
             "Microsoft did not return a valid Store session. Sign in again."
         }
         val storeExpiry = System.currentTimeMillis() + store.optLong("expires_in", 300).coerceIn(1, 86400) * 1000
-        return StoreSession(storeToken, store.optString("refresh_token").ifBlank { refresh }, owner, minOf(expiry, storeExpiry))
+        val gamertag = claims.getJSONObject(0).optString("gtg").takeIf { it.isNotBlank() && it != "null" }
+            ?: runCatching {
+                val profile = request(XboxRequest(
+                    "https://profile.xboxlive.com/users/xuid($owner)/profile/settings?settings=Gamertag",
+                    headers = mapOf("Authorization" to "XBL3.0 x=$hash;$token", "x-xbl-contract-version" to "2"),
+                ))
+                val settings = profile.optJSONArray("profileUsers")?.optJSONObject(0)?.optJSONArray("settings")
+                (0 until (settings?.length() ?: 0)).firstNotNullOfOrNull { idx ->
+                    settings?.optJSONObject(idx)?.takeIf { it.optString("id") == "Gamertag" }?.optString("value")
+                        ?.takeIf { it.isNotBlank() && it != "null" }
+                }
+            }.getOrNull()
+            ?: ""
+        return StoreSession(storeToken, store.optString("refresh_token").ifBlank { refresh }, owner, minOf(expiry, storeExpiry), gamertag)
     }
 
     /** Purchase entitlements are authoritative; a history entry is never treated as proof of ownership. */
@@ -155,7 +168,8 @@ internal fun xboxImageUrl(value: String): String? = runCatching {
 
 private fun requestXboxJson(request: XboxRequest): JSONObject {
     val uri = Http.validate(request.url, setOf(
-        "login.live.com", "user.auth.xboxlive.com", "xsts.auth.xboxlive.com", "collections.mp.microsoft.com", "catalog.gamepass.com", "displaycatalog.mp.microsoft.com"))
+        "login.live.com", "user.auth.xboxlive.com", "xsts.auth.xboxlive.com", "profile.xboxlive.com",
+        "collections.mp.microsoft.com", "catalog.gamepass.com", "displaycatalog.mp.microsoft.com"))
     val response = Http.exchange(uri, headers = request.headers, body = request.body?.toByteArray(Charsets.UTF_8), contentType = request.contentType,
         connectTimeout = 15_000, readTimeout = 25_000, userAgent = null, tooLarge = "Xbox returned too much data.")
     val status = response.status

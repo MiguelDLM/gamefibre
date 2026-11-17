@@ -139,6 +139,7 @@ class MainActivity : AppCompatActivity() {
     private var downloadSourceKey = ""
     private var listScrollX = 0
     private var gamePageScrollY = 0
+    private var accountsScrollY = 0
     private val gameHistory = mutableListOf<GamePageVisit>()
     private var gameSequence = emptyList<String>()
     private val relatedRows = mutableListOf<RecyclerView>()
@@ -611,11 +612,13 @@ class MainActivity : AppCompatActivity() {
                 beatIndex?.updateKnownSteamGames(steamEntries)
             }
         }
+        val changedRemoteStores = mutableSetOf<LibraryStore>()
         LibraryStore.entries.filter { it.account != null }.forEach { source ->
             val games = accounts.state.value.getValue(source.account!!).games
             if (remoteLibraries[source] !== games) {
                 remoteLibraries[source] = games
                 remoteEntries[source] = games.map { LibraryEntry(source, it.id, it.name, remote = it) }
+                if (games.isNotEmpty()) changedRemoteStores.add(source)
             }
         }
         val owners = libraryOwners()
@@ -634,7 +637,9 @@ class MainActivity : AppCompatActivity() {
         val assetSignature = "${combined.hashCode()}:${owners}:${observedLibraryKeys.hashCode()}:${ownedKeys.hashCode()}"
         if (stagedAssetSignature != assetSignature) {
             stagedAssetSignature = assetSignature
-            assetRepository.synchronize(combined, owners, combined.filter { listStore(collection.list) == it.store }.take(24).map { it.key }.toSet(), observed=observedLibraryKeys, owned=ownedKeys)
+            val priorityKeys = (combined.filter { listStore(collection.list) == it.store }.take(24) +
+                combined.filter { it.store in changedRemoteStores }.take(24)).map { it.key }.toSet()
+            assetRepository.synchronize(combined, owners, priorityKeys, observed=observedLibraryKeys, owned=ownedKeys)
         }
         selectedEntry = combined.find { it.key == selectedKey } ?: selectedEntry
         if (tab == "game" && gameReturnTab == "store") selectedEntry?.let { current ->
@@ -666,12 +671,14 @@ class MainActivity : AppCompatActivity() {
             tab == "settings" -> "settings"
             tab == "game" -> gameScreenKey()
             tab == "accounts" && steamSignIn -> "auth:${state.optString("status")}:${state.optString("guardError")}:${state.optString("connectionError")}:${state.optString("challengeUrl")}:${state.optString("guardEmail")}:${state.optBoolean("canUseGuardCode")}:$method:${state.optBoolean("sessionAvailable")}"
-            tab == "accounts" -> "accounts:${state.optString("status")}:${state.optString("connectionError")}:${state.optBoolean("sessionAvailable")}:${allGames.size}:${state.optBoolean("libraryLoading")}:${accounts.state.value.map { (store, account) -> listOf(store, account.saved, account.connected, account.loading, account.games.size, account.error) }}:$busy"
+            tab == "accounts" -> "accounts:${state.optString("status")}:${state.optString("accountName")}:${state.optString("connectionError")}:${state.optBoolean("sessionAvailable")}:${allGames.size}:${state.optBoolean("libraryLoading")}:${accounts.slotsState.value.map { (store, slots) -> store to slots.map { listOf(it.slotId, it.account.owner, it.account.label, it.account.saved, it.account.connected, it.account.loading, it.account.games.size, it.account.error) } }}:$busy"
             else -> "library:${collection.tileSize}"
         }
         if (nextKey != screenKey || force) {
             hideLibraryPageHint()
             if (screenKey.startsWith("game:$selectedKey:") && tab == "game") gamePageScrollY = (body.getChildAt(0) as? ScrollView)?.scrollY ?: gamePageScrollY
+            if (screenKey.startsWith("accounts:") && tab == "accounts") accountsScrollY = (body.getChildAt(0) as? ScrollView)?.scrollY ?: accountsScrollY
+            else if (tab != "accounts") accountsScrollY = 0
             screenKey = nextKey
             libraryRecycler?.layoutManager?.onSaveInstanceState()?.let { libraryScroll = it }
             (listsRow?.parent as? HorizontalScrollView)?.let { listScrollX = it.scrollX }
@@ -1000,19 +1007,45 @@ class MainActivity : AppCompatActivity() {
                     if (source == LibraryStore.STEAM) confirmSignOut() else confirmStoreSignOut(source.account!!)
                 }.apply { if (source == LibraryStore.STEAM) enable(this, !busy) })
                 ui.add(card, actions)
-                if (source.account != null) {
+                if (source == LibraryStore.STEAM) {
+                    val steamLabel = state.optString("accountName").takeIf { it.isNotBlank() }
+                        ?: state.optString("account").takeIf { it.isNotBlank() }
+                    if (steamLabel != null) {
+                        ui.gap(card, 10)
+                        ui.add(card, ui.text("$steamLabel · $count ${if (count == 1) "game" else "games"}", 12, ui.secondary))
+                    }
+                } else if (source.account != null) {
                     val slots = accounts.slotsState.value.getValue(source.account)
                         .filter { it.account.saved || it.account.connected || it.account.libraryLoaded }
-                    if (slots.size > 1) {
+                    if (slots.isNotEmpty()) {
                         ui.gap(card, 10)
-                        slots.forEach { slot ->
+                        slots.forEachIndexed { slotIndex, slot ->
                             val slotRow = ui.row()
-                            val label = slot.account.owner ?: slot.slotId
-                            val n = slot.account.games.size
-                            slotRow.addView(ui.text("$label · $n games", 12, ui.secondary), LinearLayout.LayoutParams(0, -2, 1f))
-                            slotRow.addView(ui.iconButton(R.drawable.ic_log_out, "Remove $label") {
-                                act { accounts.signOut(source.account, slot.slotId) }
-                            })
+                            val rawOwner = slot.account.owner?.takeIf { it.isNotBlank() }
+                            val opaqueOwner = rawOwner != null && (
+                                rawOwner.startsWith("amzn1.") ||
+                                    rawOwner.matches(Regex("[0-9a-fA-F-]{16,}")) ||
+                                    rawOwner.matches(Regex("[0-9]{10,}"))
+                                )
+                            val label = slot.account.label?.takeIf { it.isNotBlank() }
+                                ?: rawOwner?.takeUnless { opaqueOwner }
+                                ?: if (slots.size > 1) "Account ${slotIndex + 1} (reconnect)" else "Reconnect to load account"
+                            val ownedCount = slot.account.games.count { it.xboxAccess != XboxAccess.GAME_PASS }
+                            val gpCount = if (collection.showGamePass) slot.account.games.count { it.xboxAccess == XboxAccess.GAME_PASS } else 0
+                            val countLabel = if (gpCount > 0) {
+                                "$ownedCount owned · $gpCount Game Pass"
+                            } else {
+                                "$ownedCount ${if (ownedCount == 1) "game" else "games"}"
+                            }
+                            slotRow.addView(
+                                ui.text("$label · $countLabel", 12, ui.secondary),
+                                LinearLayout.LayoutParams(0, -2, 1f),
+                            )
+                            if (slots.size > 1) {
+                                slotRow.addView(ui.iconButton(R.drawable.ic_log_out, "Remove $label") {
+                                    act { accounts.signOut(source.account, slot.slotId) }
+                                })
+                            }
                             ui.add(card, slotRow)
                         }
                     }
@@ -1039,6 +1072,9 @@ class MainActivity : AppCompatActivity() {
                     if (index % 2 == 0) marginEnd = ui.dp(12)
                 })
             } else { ui.add(content, card); ui.gap(content, 16) }
+        }
+        (content.parent as? ScrollView)?.let { scroll ->
+            if (accountsScrollY > 0) scroll.post { scroll.scrollTo(0, accountsScrollY) }
         }
     }
 
@@ -1332,7 +1368,7 @@ class MainActivity : AppCompatActivity() {
         }
         private fun snapshotReady(position: Int): Boolean {
             val current = pages[pageNames[position]] ?: return false
-            return current.adapter.itemCount > 0 || !current.adapter.hasCandidates
+            return current.adapter.itemCount > 0 || !current.adapter.hasCandidates || current.empty.visibility == View.VISIBLE
         }
         fun updateReadiness() {
             val position = requestedPage ?: pager.currentItem
@@ -1528,18 +1564,25 @@ class MainActivity : AppCompatActivity() {
         page.adapter.promoteViewport()
         retainedLibrary?.updateReadiness()
         val noSearch = pageQuery.isBlank() && !pageTags.active
+        val hasPublished = games.any { assetRepository.published(it) != null }
         page.empty.apply {
-            removeAllViews(); visibility = if (games.isEmpty() && !libraryLoading) View.VISIBLE else View.GONE
-            addView(ui.icon(R.drawable.ic_search), LinearLayout.LayoutParams(ui.dp(36), ui.dp(36)))
-            ui.gap(this)
-            ui.add(this, ui.text(if (!anyAccount) "All your games, together" else if (entries.isEmpty()) "Your library is empty" else if (noSearch && page.name.isNotEmpty() && page.name != "All games") "No games in ${page.name}" else "No games found", 20).apply { gravity = Gravity.CENTER })
-            ui.add(this, ui.text(if (page.name == WishlistItems.LIST) "Search the stores to add games to your wishlist." else if (page.name == "Xbox" && collection.isAutomaticList("Xbox")) "Use + to add Xbox disc games, or connect Xbox in Accounts to see your digital games." else if (!anyAccount) "Connect Steam, GOG, Epic Games or Xbox to explore your library." else if (entries.isEmpty()) "Refresh your libraries or connect another store." else if (noSearch && page.name == "Downloads") "Start a download from a game’s page." else if (noSearch && filter != null) "Connect ${page.name} in Accounts to see its games." else if (noSearch && page.name.isNotEmpty() && page.name != "All games") "Open a game to add it to this list." else "Try different search text or clear the tag filters.", 13, ui.secondary).apply { gravity = Gravity.CENTER })
-            if (page.name != WishlistItems.LIST && (!anyAccount || entries.isEmpty())) {
-                ui.gap(this); ui.add(this, ui.button("Manage accounts", true) { selectTab("accounts") })
-            }
-            if (noSearch && collection.canRemoveList(page.name) && games.isEmpty() && !libraryLoading && libraryListEntries(page.name, includeHidden = true).isEmpty()) {
+            removeAllViews(); visibility = if ((games.isEmpty() && !libraryLoading) || (games.isNotEmpty() && !hasPublished)) View.VISIBLE else View.GONE
+            if (games.isNotEmpty() && !hasPublished) {
+                ui.add(this, ui.text("Preparing artwork for ${games.size} ${if (games.size == 1) "game" else "games"}", 18).apply { gravity = Gravity.CENTER })
+                ui.gap(this, 8)
+                ui.add(this, ui.button("Artwork preparation") { showLibraryPreparation(page.name) })
+            } else {
+                addView(ui.icon(R.drawable.ic_search), LinearLayout.LayoutParams(ui.dp(36), ui.dp(36)))
                 ui.gap(this)
-                ui.add(this, ui.button("Remove list") { showRemoveEmptyList(page.name) })
+                ui.add(this, ui.text(if (!anyAccount) "All your games, together" else if (entries.isEmpty()) "Your library is empty" else if (noSearch && page.name.isNotEmpty() && page.name != "All games") "No games in ${page.name}" else "No games found", 20).apply { gravity = Gravity.CENTER })
+                ui.add(this, ui.text(if (page.name == WishlistItems.LIST) "Search the stores to add games to your wishlist." else if (page.name == "Xbox" && collection.isAutomaticList("Xbox")) "Use + to add Xbox disc games, or connect Xbox in Accounts to see your digital games." else if (!anyAccount) "Connect Steam, GOG, Epic Games or Xbox to explore your library." else if (entries.isEmpty()) "Refresh your libraries or connect another store." else if (noSearch && page.name == "Downloads") "Start a download from a game’s page." else if (noSearch && filter != null) "Connect ${page.name} in Accounts to see its games." else if (noSearch && page.name.isNotEmpty() && page.name != "All games") "Open a game to add it to this list." else "Try different search text or clear the tag filters.", 13, ui.secondary).apply { gravity = Gravity.CENTER })
+                if (page.name != WishlistItems.LIST && (!anyAccount || entries.isEmpty())) {
+                    ui.gap(this); ui.add(this, ui.button("Manage accounts", true) { selectTab("accounts") })
+                }
+                if (noSearch && collection.canRemoveList(page.name) && games.isEmpty() && !libraryLoading && libraryListEntries(page.name, includeHidden = true).isEmpty()) {
+                    ui.gap(this)
+                    ui.add(this, ui.button("Remove list") { showRemoveEmptyList(page.name) })
+                }
             }
         }
     }
@@ -1785,7 +1828,12 @@ class MainActivity : AppCompatActivity() {
             val anchor = position.coerceIn(0, (published.size - 1).coerceAtLeast(0))
             val range = (anchor - libraryColumns(list)*12).coerceAtLeast(0) until (anchor+libraryColumns(list)*16).coerceAtMost(published.size)
             if (published.isEmpty() && value.isNotEmpty()) {
-                ready = false
+                if (games.isNotEmpty()) {
+                    val diff = DiffUtil.calculateDiff(LibraryDiff(games, emptyList(), true, metascores, emptyMap()))
+                    submitted = emptyList(); games = emptyList(); metascores = emptyMap()
+                    diff.dispatchUpdatesTo(this)
+                }
+                ready = true
                 retainedLibrary?.updateReadiness()
                 return
             }
@@ -2167,9 +2215,12 @@ class MainActivity : AppCompatActivity() {
                 menu.add(0, 4, 4, "Show hidden games").apply { isCheckable = true; isChecked = collection.showHiddenGames }
                 menu.add(0, 6, 5, "Show Game Pass").apply { isCheckable = true; isChecked = collection.showGamePass }
                 if (batchArtwork?.status?.value?.running == true) menu.add(0, 7, 6, "Artwork progress")
+                val pending = tagSearchCandidates(collection.list).count { assetRepository.published(it) == null }
+                if (pending > 0) menu.add(0, 9, 7, getString(R.string.catalog_preparation, pending))
             }
             setOnMenuItemClickListener { item ->
                 when (item.itemId) {
+                    9 -> showLibraryPreparation(collection.list)
                     8 -> storeSearch?.showPreparation()
                     7 -> showArtworkProgress()
                     6 -> {
@@ -2196,6 +2247,29 @@ class MainActivity : AppCompatActivity() {
             }
             show()
         }
+    }
+
+    private fun showLibraryPreparation(listName: String) {
+        val missing = tagSearchCandidates(listName).filter { assetRepository.published(it) == null }
+        if (missing.isEmpty()) return
+        val failures = assetRepository.library.value.failures
+        val dialog = ContentDialog(this, ui, "Artwork preparation")
+        missing.forEach { game ->
+            val reason = game.copies.ifEmpty { listOf(game) }.firstNotNullOfOrNull { failures[it.key] } ?: "Preparing artwork…"
+            ui.add(dialog.content, ui.text(game.name, 16, medium = true))
+            ui.add(dialog.content, ui.text(reason, 12, ui.secondary))
+            ui.add(dialog.content, ui.button("Select artwork") { dialog.dismiss(); changeCoverArtwork(game) })
+            ui.gap(dialog.content, 12)
+        }
+        dialog.setActions(
+            ui.button("Retry artwork", true) {
+                dialog.dismiss()
+                assetRepository.refreshArtwork(missing, libraryOwners())
+                assetRepository.promote(missing.take(24).flatMap { it.copies.ifEmpty { listOf(it) } }.map { it.key }.toSet())
+            },
+            ui.button("Close") { dialog.dismiss() }
+        )
+        showModal(dialog)
     }
 
     private fun showCollectionMenu() {
